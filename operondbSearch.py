@@ -4,52 +4,52 @@ from bs4 import BeautifulSoup
 
 def fetch_operon_data(query: str, include_all_rows: bool) -> pd.DataFrame:
     """
-    Выполняет поиск оперонов на OperonDB для заданного запроса с использованием Playwright.
+    Searches for operons on OperonDB for the given query using Playwright.
 
-    Аргументы:
-      query: Строка поиска, например "Haemophilus influenzae Rd KW20".
+    Arguments:
+      query: Search string, for example "Haemophilus influenzae Rd KW20".
       include_all_rows:
-          True  – сохранить все найденные строки;
-          False – сохранять только строки с непустым Definition.
-                  Если встречается первая строка с пустым Definition, обход прекращается.
+          True  – save all found rows;
+          False – save only rows with a non-empty Definition.
+                  If the first row with an empty Definition is encountered, the search stops.
 
-    Возвращает:
-      DataFrame с колонками: "Operon ID", "Species", "Name", "Genes" (список строк) и "Definition".
+    Returns:
+      DataFrame with columns: "Operon ID", "Species", "Name", "Genes" (list of strings) and "Definition".
     """
     base_url = "https://operondb.jp/search"
     key = "species"
     page = 1
-    data = []  # Здесь будем аккумулировать найденные строки таблицы
-    header = None  # Заголовки столбцов
+    data = []  # Here we will accumulate the found table rows
+    header = None  # Column headers
     formatted_query = query.replace(" ", "%20")
 
     with sync_playwright() as p:
-        # Запускаем Chromium в headless-режиме
+        # Launch Chromium in headless mode
         browser = p.chromium.launch(headless=True)
         context = browser.new_context()
         p_page = context.new_page()
 
         while True:
             url = f"{base_url}?p={page}&q={formatted_query}&key={key}"
-            print(f"Обработка страницы {page}: {url}")
+            print(f"Processing page {page}: {url}")
             try:
-                # Переходим по URL с таймаутом 30 сек.
+                # Navigate to the URL with a timeout of 30 seconds.
                 p_page.goto(url, timeout=30000)
-                # Сначала ждем появления основного контейнера #app (примерно 15 сек.)
+                # First, wait for the main container #app to appear (about 15 seconds)
                 p_page.wait_for_selector("#app", timeout=15000)
-                # Даем дополнительное время (например, 5 сек.) для того, чтобы динамический контент загрузился.
+                # Provide additional time (e.g., 5 seconds) for the dynamic content to load.
                 p_page.wait_for_timeout(5000)
                 html = p_page.content()
             except Exception as e:
-                print(f"Ошибка загрузки страницы {page}: {e}")
+                print(f"Error loading page {page}: {e}")
                 break
 
-            # Выводим длину полученного HTML для отладки
-            print(f"Длина HTML (страница {page}): {len(html)}")
+            # Output the length of the retrieved HTML for debugging
+            print(f"HTML length (page {page}): {len(html)}")
 
             soup = BeautifulSoup(html, "html.parser")
 
-            # На первой странице извлекаем заголовки из элемента <thead> внутри #app, если он есть
+            # On the first page, extract headers from the <thead> element within #app, if it exists
             if page == 1:
                 thead = soup.select_one("div#app thead") or soup.select_one("thead")
                 if thead:
@@ -57,19 +57,19 @@ def fetch_operon_data(query: str, include_all_rows: bool) -> pd.DataFrame:
                 if not header or len(header) < 5:
                     header = ["Operon ID", "Species", "Name", "Genes", "Definition"]
 
-            # Пытаемся найти таблицу, которая находится внутри контейнера #app
+            # Try to find the table located inside the #app container
             table = soup.select_one("div#app table")
             if not table:
-                print(f"Таблица не найдена на странице {page}. Завершение обхода.")
+                print(f"Table not found on page {page}. Exiting loop.")
                 break
 
             rows = table.find_all("tr")
-            # Если таблица содержит только строку заголовков или пуста – завершаем
+            # If the table contains only the header row or is empty – exit the loop
             if not rows or len(rows) <= 1:
-                print(f"Нет строк с данными в таблице на странице {page}. Завершение обхода.")
+                print(f"No data rows found in table on page {page}. Exiting loop.")
                 break
 
-            # Пропускаем первую строку (заголовки) и обрабатываем оставшиеся строки
+            # Skip the first row (headers) and process the remaining rows
             data_rows = rows[1:]
             new_data_count = 0
             stop_flag = False
@@ -77,19 +77,19 @@ def fetch_operon_data(query: str, include_all_rows: bool) -> pd.DataFrame:
             for row in data_rows:
                 cells = row.find_all("td")
                 if len(cells) < 5:
-                    continue  # Пропускаем строки, у которых меньше пяти ячеек
+                    continue  # Skip rows that have fewer than five cells
 
-                # Извлекаем данные по столбцам
+                # Extract data from the columns
                 operon_id = cells[0].get_text(strip=True)
                 species = cells[1].get_text(strip=True)
                 name = cells[2].get_text(strip=True)
                 genes_cell = cells[3]
-                # Из столбца "Genes" собираем список текста из каждого <li>
+                # From the "Genes" column, collect a list of text from each <li>
                 genes = [li.get_text(strip=True) for li in genes_cell.find_all("li")]
                 definition = cells[4].get_text(strip=True)
 
                 if not include_all_rows and definition == "":
-                    print("Найдена строка с пустым Definition. Прерывание обхода.")
+                    print("Found a row with an empty Definition. Exiting loop.")
                     stop_flag = True
                     break
 
@@ -97,7 +97,7 @@ def fetch_operon_data(query: str, include_all_rows: bool) -> pd.DataFrame:
                 new_data_count += 1
 
             if new_data_count == 0:
-                print(f"На странице {page} не найдено новых данных. Завершение обхода.")
+                print(f"No new data found on page {page}. Exiting loop.")
                 break
 
             if stop_flag:
